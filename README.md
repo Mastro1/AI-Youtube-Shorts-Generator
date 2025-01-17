@@ -2,7 +2,7 @@
 
 - **Video Download**: Given a YouTube URL, the tool downloads the video.
 - **Transcription**: Uses Whisper to transcribe the video.
-- **Highlight Extraction**: Utilizes OpenAI's GPT-4 to identify the most engaging parts of the video.
+- **Highlight Extraction**: Utilizes OpenAI's Gemini-Pro to identify the most engaging parts of the video.
 - **Speaker Detection**: Detects speakers in the video.
 - **Vertical Cropping**: Crops the highlighted sections vertically, making them perfect for shorts.
 
