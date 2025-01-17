@@ -1,85 +1,170 @@
-import openai
-from dotenv import load_dotenv
-import os
+import google.generativeai as genai
+from typing import Annotated, Any, Dict, TypedDict, List
+from langgraph.graph import StateGraph
 import json
+import os
+from dotenv import load_dotenv
 
 load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    raise ValueError(
+        "Google API key not found. Make sure it is defined in the .env file."
+    )
 
-openai.api_key = os.getenv("OPENAI_API")
-
-if not openai.api_key:
-    raise ValueError("API key not found. Make sure it is defined in the .env file.")
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel("gemini-pro")
 
 
-# Function to extract start and end times
-def extract_times(json_string):
+# Type definitions
+class Message(TypedDict):
+    role: str
+    content: str
+
+
+class HighlightData(TypedDict):
+    start: float
+    content: str
+    end: float
+
+
+class GraphState(TypedDict):
+    messages: List[Message]
+    highlights: list[HighlightData]
+    error: str | None
+
+
+def extract_highlights(state: GraphState) -> GraphState:
+    """Extract highlights from transcription using Gemini."""
     try:
-        # Parse the JSON string
-        data = json.loads(json_string)
+        messages = state["messages"]
+        last_message = messages[-1]["content"]
 
-        # Extract start and end times as floats
-        start_time = float(data[0]["start"])
-        end_time = float(data[0]["end"])
+        system_prompt = """
+        Analyze the provided transcription and select ONE continuous segment that would make an engaging short-form video. 
+        
+        CRITICAL REQUIREMENTS:
+        1. Time Duration:
+           - Minimum: 30 seconds
+           - Maximum: 60 seconds
+           - Target: Aim for 45 seconds when possible
+        
+        2. Selection Criteria:
+           - Choose the MOST engaging or impactful continuous segment
+           - Must include complete thoughts/sentences
+           - Select moments with clear context (avoid starting mid-conversation)
+           - Prefer segments with a clear hook or interesting opening
+        
+        3. Timestamp Accuracy:
+           - Use EXACT timestamps from the transcription
+           - Do not make up or modify timestamps
+           - Start and end times must correspond to actual transcript markers
+        
+        4. Format Requirements:
+           Return ONLY a JSON array with ONE object in this exact format:
+           [{
+               "start": <exact_start_timestamp>,
+               "content": "complete segment content",
+               "end": <exact_end_timestamp>
+           }]
 
-        # Convert to integers
-        start_time_int = int(start_time)
-        end_time_int = int(end_time)
-        return start_time_int, end_time_int
+        VALIDATION:
+        - Verify end_time - start_time is between 30 and 60 seconds
+        - Ensure timestamps match actual transcript markers
+        - Confirm the content is a continuous, complete segment
+
+        Return ONLY the JSON. No explanations or additional text.
+        """
+        prompt = f"{system_prompt}\n\nTranscription:\n{last_message}"
+        response = model.generate_content(prompt)
+
+        # Extract JSON from response
+        response_text = response.text
+        json_string = response_text.strip("`json\n").strip()
+        highlights = json.loads(json_string)
+
+        return {**state, "highlights": highlights, "error": None}
     except Exception as e:
-        print(f"Error in extract_times: {e}")
+        return {**state, "error": str(e)}
+
+
+def validate_highlights(state: GraphState) -> str:
+    """Determine next step based on validation."""
+    if state.get("error") or not state.get("highlights"):
+        return "extract"
+
+    highlights = state.get("highlights", [])
+    if not highlights or len(highlights) != 1:
+        return "extract"
+
+    highlight = highlights[0]
+    if not all(key in highlight for key in ["start", "content", "end"]):
+        return "extract"
+
+    try:
+        start = float(highlight["start"])
+        end = float(highlight["end"])
+        if start >= end:
+            return "extract"
+    except ValueError:
+        return "extract"
+
+    return "end"
+
+
+def create_highlight_graph() -> StateGraph:
+    """Create the LangGraph workflow."""
+    workflow = StateGraph(GraphState)
+
+    # Add nodes
+    workflow.add_node("extract", extract_highlights)
+    workflow.add_node("end", lambda x: x)
+
+    # Add conditional edges
+    workflow.add_conditional_edges(
+        "extract", validate_highlights, {"extract": "extract", "end": "end"}
+    )
+
+    # Set entry point
+    workflow.set_entry_point("extract")
+
+    return workflow.compile()
+
+
+def GetHighlight(transcription: str) -> tuple[float, float]:
+    """Main function to get highlights from transcription."""
+    try:
+        # Initialize the graph
+        workflow = create_highlight_graph()
+
+        # Prepare initial state
+        initial_state: GraphState = {
+            "messages": [{"role": "user", "content": transcription}],
+            "highlights": [],
+            "error": None,
+        }
+
+        # Run the graph
+        final_state = workflow.invoke(initial_state)
+
+        highlights = final_state.get("highlights", [])
+        if highlights and len(highlights) > 0:
+            highlight = highlights[0]
+            return float(highlight["start"]), float(highlight["end"])
+
         return 0, 0
-
-
-system = """
-
-Baised on the Transcription user provides with start and end, Highilight the main parts in less then 1 min which can be directly converted into a short. highlight it such that its intresting and also keep the time staps for the clip to start and end. only select a continues Part of the video
-
-Follow this Format and return in valid json 
-[{
-start: "Start time of the clip",
-content: "Highlight Text",
-end: "End Time for the highlighted clip"
-}]
-it should be one continues clip as it will then be cut from the video and uploaded as a tiktok video. so only have one start, end and content
-
-Dont say anything else, just return Proper Json. no explanation etc
-
-
-IF YOU DONT HAVE ONE start AND end WHICH IS FOR THE LENGTH OF THE ENTIRE HIGHLIGHT, THEN 10 KITTENS WILL DIE, I WILL DO JSON['start'] AND IF IT DOESNT WORK THEN...
-"""
-
-User = """
-Any Example
-"""
-
-
-def GetHighlight(Transcription):
-    print("Getting Highlight from Transcription ")
-    try:
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-2024-05-13",
-            temperature=0.7,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": Transcription + system},
-            ],
-        )
-
-        json_string = response.choices[0].message.content
-        json_string = json_string.replace("json", "")
-        json_string = json_string.replace("```", "")
-        # print(json_string)
-        Start, End = extract_times(json_string)
-        if Start == End:
-            Ask = input("Error - Get Highlights again (y/n) -> ").lower()
-            if Ask == "y":
-                Start, End = GetHighlight(Transcription)
-        return Start, End
     except Exception as e:
-        print(f"Error in GetHighlight: {e}")
+        print(f"Error in get_highlight: {e}")
         return 0, 0
 
 
 if __name__ == "__main__":
-    print(GetHighlight(User))
+    example_transcription = """
+    [0.0] Speaker 1: Welcome to our discussion about artificial intelligence.
+    [15.5] Speaker 1: Today we'll explore the fascinating world of machine learning.
+    [30.2] Speaker 2: One of the most exciting applications is in video processing.
+    [45.8] Speaker 1: Let's look at how AI can automatically generate video highlights.
+    [60.0] Speaker 2: This technology is revolutionizing content creation.
+    """
+    start, end = GetHighlight(example_transcription)
+    print(f"Start: {start}, End: {end}")
