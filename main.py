@@ -1,7 +1,7 @@
 from Components.YoutubeDownloader import download_youtube_video
 from Components.Edit import extractAudio, crop_video
 from Components.Transcription import transcribeAudio
-from Components.LanguageTasks import GetHighlight
+from Components.LanguageTasks import GetHighlights
 from Components.FaceCrop import crop_to_vertical, combine_videos
 
 url = input("Enter YouTube video URL: ")
@@ -19,7 +19,7 @@ if Vid:
             for text, start, end in transcriptions:
                 TransText += f"{start} - {end}: {text}"
 
-            start, stop = GetHighlight(TransText)
+            start, stop = GetHighlights(TransText)[0]
             if start != 0 and stop != 0:
                 print(f"Start: {start} , End: {stop}")
 

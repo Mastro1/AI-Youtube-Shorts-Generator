@@ -1,6 +1,5 @@
 import google.generativeai as genai
-from typing import Annotated, Any, Dict, TypedDict, List
-from langgraph.graph import StateGraph
+from typing import TypedDict, List
 import json
 import os
 from dotenv import load_dotenv
@@ -16,7 +15,6 @@ genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel("gemini-pro")
 
 
-# Type definitions
 class Message(TypedDict):
     role: str
     content: str
@@ -28,134 +26,118 @@ class HighlightData(TypedDict):
     end: float
 
 
-class GraphState(TypedDict):
-    messages: List[Message]
-    highlights: list[HighlightData]
-    error: str | None
-
-
-def extract_highlights(state: GraphState) -> GraphState:
-    """Extract highlights from transcription using Gemini."""
+def validate_highlight(highlight: HighlightData) -> bool:
+    """Validate a single highlight segment."""
     try:
-        messages = state["messages"]
-        last_message = messages[-1]["content"]
+        if not all(key in highlight for key in ["start", "content", "end"]):
+            return False
 
-        system_prompt = """
-        Analyze the provided transcription and select ONE continuous segment that would make an engaging short-form video. 
-        
-        CRITICAL REQUIREMENTS:
-        1. Important Time Duration:
-           - Minimum: 30 seconds between start and end
-           - Maximum: 60 seconds between start and end
-           - Target: Aim for 45 seconds when possible
-        
-        2. Selection Criteria:
-           - Choose the MOST engaging or impactful continuous segment
-           - Must include complete thoughts/sentences
-           - Select moments with clear context (avoid starting mid-conversation)
-           - Prefer segments with a clear hook or interesting opening
-        
-        3. Timestamp Accuracy:
-           - Use EXACT timestamps from the transcription
-           - Do not make up or modify timestamps
-           - Start and end times must correspond to actual transcript markers
-        
-        4. Format Requirements:
-           Return ONLY a JSON array with ONE object in this exact format:
-           [{
-               "start": <exact_start_timestamp>,
-               "content": "complete segment content",
-               "end": <exact_end_timestamp>
-           }]
-
-        Important VALIDATION:
-        - Verify end_time - start_time is between 30 and 60 seconds
-        - Ensure timestamps match actual transcript markers
-        - Confirm the content is a continuous, complete segment
-
-        Return ONLY the JSON. No explanations or additional text.
-        """
-        prompt = f"{system_prompt}\n\nTranscription:\n{last_message}"
-        response = model.generate_content(prompt)
-
-        # Extract JSON from response
-        response_text = response.text
-        json_string = response_text.strip("`json\n").strip()
-        highlights = json.loads(json_string)
-
-        return {**state, "highlights": highlights, "error": None}
-    except Exception as e:
-        return {**state, "error": str(e)}
-
-
-def validate_highlights(state: GraphState) -> str:
-    """Determine next step based on validation."""
-    if state.get("error") or not state.get("highlights"):
-        return "extract"
-
-    highlights = state.get("highlights", [])
-    if not highlights or len(highlights) != 1:
-        return "extract"
-
-    highlight = highlights[0]
-    if not all(key in highlight for key in ["start", "content", "end"]):
-        return "extract"
-
-    try:
         start = float(highlight["start"])
         end = float(highlight["end"])
+
+        # Check for valid duration (60 seconds with 0.1s tolerance)
+        if abs((end - start) - 60.0) > 0.1:
+            return False
+
+        # Check for valid ordering
         if start >= end:
-            return "extract"
-    except ValueError:
-        return "extract"
+            return False
 
-    return "end"
-
-
-def create_highlight_graph() -> StateGraph:
-    """Create the LangGraph workflow."""
-    workflow = StateGraph(GraphState)
-
-    # Add nodes
-    workflow.add_node("extract", extract_highlights)
-    workflow.add_node("end", lambda x: x)
-
-    # Add conditional edges
-    workflow.add_conditional_edges(
-        "extract", validate_highlights, {"extract": "extract", "end": "end"}
-    )
-
-    # Set entry point
-    workflow.set_entry_point("extract")
-
-    return workflow.compile()
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
-def GetHighlight(transcription: str) -> tuple[float, float]:
-    """Main function to get highlights from transcription."""
+def validate_highlights(highlights: List[HighlightData]) -> bool:
+    """Validate all highlights and check for overlaps."""
+    if not highlights:
+        return False
+
+    # Validate each individual highlight
+    if not all(validate_highlight(h) for h in highlights):
+        return False
+
+    # Check for overlapping segments
+    sorted_highlights = sorted(highlights, key=lambda x: float(x["start"]))
+    for i in range(len(sorted_highlights) - 1):
+        if float(sorted_highlights[i]["end"]) > float(
+            sorted_highlights[i + 1]["start"]
+        ):
+            return False
+
+    return True
+
+
+def extract_highlights(
+    transcription: str, max_attempts: int = 3
+) -> List[HighlightData]:
+    """Extract highlights with retry logic."""
+    system_prompt = """
+    Analyze the provided transcription and select multiple NON-OVERLAPPING segments that would make engaging longer-form videos. 
+    
+    CRITICAL REQUIREMENTS:
+    1. Time Duration Requirements:
+       - EXACTLY 60 seconds between start and end for each segment
+       - No overlap between segments
+       - Return as many valid 60-second segments as possible
+    
+    2. Selection Criteria:
+       - Choose engaging or impactful continuous segments
+       - Must include complete thoughts/sentences
+       - Select moments with clear context (avoid starting mid-conversation)
+       - Prefer segments with natural breaks or topic transitions
+    
+    3. Timestamp Accuracy:
+       - Use EXACT timestamps from the transcription
+       - Do not make up or modify timestamps
+       - Start and end times must correspond to actual transcript markers
+    
+    4. Format Requirements:
+       Return ONLY a JSON array of objects in this exact format:
+       [{
+           "start": <exact_start_timestamp>,
+           "content": "complete segment content",
+           "end": <exact_end_timestamp>
+       }]
+
+    Important VALIDATION:
+    - Verify each end_time - start_time is EXACTLY 60 seconds
+    - Ensure timestamps match actual transcript markers
+    - Confirm each content segment is continuous and complete
+    - Verify segments don't overlap
+
+    Return ONLY the JSON. No explanations or additional text.
+    """
+
+    for attempt in range(max_attempts):
+        try:
+            prompt = f"{system_prompt}\n\nTranscription:\n{transcription}"
+            response = model.generate_content(prompt)
+
+            # Extract JSON from response
+            response_text = response.text
+            json_string = response_text.strip("`json\n").strip()
+            highlights = json.loads(json_string)
+
+            # Validate the highlights
+            if validate_highlights(highlights):
+                return highlights
+
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            continue
+
+    return []
+
+
+def GetHighlights(transcription: str) -> list[tuple[float, float]]:
+    """Main function to get multiple 60-second highlights from transcription."""
     try:
-        # Initialize the graph
-        workflow = create_highlight_graph()
-
-        # Prepare initial state
-        initial_state: GraphState = {
-            "messages": [{"role": "user", "content": transcription}],
-            "highlights": [],
-            "error": None,
-        }
-
-        # Run the graph
-        final_state = workflow.invoke(initial_state)
-
-        highlights = final_state.get("highlights", [])
-        if highlights and len(highlights) > 0:
-            highlight = highlights[0]
-            return float(highlight["start"]), float(highlight["end"])
-
-        return 0, 0
+        highlights = extract_highlights(transcription)
+        return [(float(h["start"]), float(h["end"])) for h in highlights]
     except Exception as e:
-        print(f"Error in get_highlight: {e}")
-        return 0, 0
+        print(f"Error in GetHighlights: {e}")
+        return []
 
 
 if __name__ == "__main__":
@@ -165,6 +147,15 @@ if __name__ == "__main__":
     [30.2] Speaker 2: One of the most exciting applications is in video processing.
     [45.8] Speaker 1: Let's look at how AI can automatically generate video highlights.
     [60.0] Speaker 2: This technology is revolutionizing content creation.
+    [75.5] Speaker 1: We're seeing it used in social media, entertainment, and education.
+    [90.2] Speaker 2: The ability to automatically process and understand video content is remarkable.
+    [105.8] Speaker 1: It's changing how we create and consume digital content.
+    [120.0] Speaker 2: Let's dive into some specific examples.
     """
-    start, end = GetHighlight(example_transcription)
-    print(f"Start: {start}, End: {end}")
+
+    segments = GetHighlights(example_transcription)
+    if segments:
+        for i, (start, end) in enumerate(segments, 1):
+            print(f"Segment {i}: Start: {start}, End: {end}")
+    else:
+        print("No valid segments found.")
