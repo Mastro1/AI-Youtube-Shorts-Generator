@@ -44,9 +44,9 @@ def extract_highlights(state: GraphState) -> GraphState:
         Analyze the provided transcription and select ONE continuous segment that would make an engaging short-form video. 
         
         CRITICAL REQUIREMENTS:
-        1. Time Duration:
-           - Minimum: 30 seconds
-           - Maximum: 60 seconds
+        1. Important Time Duration:
+           - Minimum: 30 seconds between start and end
+           - Maximum: 60 seconds between start and end
            - Target: Aim for 45 seconds when possible
         
         2. Selection Criteria:
@@ -68,7 +68,7 @@ def extract_highlights(state: GraphState) -> GraphState:
                "end": <exact_end_timestamp>
            }]
 
-        VALIDATION:
+        Important VALIDATION:
         - Verify end_time - start_time is between 30 and 60 seconds
         - Ensure timestamps match actual transcript markers
         - Confirm the content is a continuous, complete segment
