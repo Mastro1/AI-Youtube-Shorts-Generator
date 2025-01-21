@@ -22,14 +22,13 @@ class Message(TypedDict):
 
 class HighlightData(TypedDict):
     start: float
-    content: str
     end: float
 
 
 def validate_highlight(highlight: HighlightData) -> bool:
     """Validate a single highlight segment."""
     try:
-        if not all(key in highlight for key in ["start", "content", "end"]):
+        if not all(key in highlight for key in ["start", "end"]):
             return False
 
         start = float(highlight["start"])
@@ -37,7 +36,7 @@ def validate_highlight(highlight: HighlightData) -> bool:
 
         # Check for valid duration (60 seconds with 0.1s tolerance)
         if abs((end - start) - 60.0) > 0.1:
-            return False
+            print("")
 
         # Check for valid ordering
         if start >= end:
@@ -51,10 +50,12 @@ def validate_highlight(highlight: HighlightData) -> bool:
 def validate_highlights(highlights: List[HighlightData]) -> bool:
     """Validate all highlights and check for overlaps."""
     if not highlights:
+        print("No Highlights Passed")
         return False
 
     # Validate each individual highlight
     if not all(validate_highlight(h) for h in highlights):
+        print("Validation Error")
         return False
 
     # Check for overlapping segments
@@ -74,7 +75,8 @@ def extract_highlights(
     """Extract highlights with retry logic."""
     system_prompt = """
     Analyze the provided transcription and select multiple NON-OVERLAPPING segments that would make engaging longer-form videos. 
-    
+    Return ONLY a JSON array. Do not include any explanations, text, or formatting outside JSON.
+
     CRITICAL REQUIREMENTS:
     1. Time Duration Requirements:
        - EXACTLY 60 seconds between start and end for each segment
@@ -96,14 +98,12 @@ def extract_highlights(
        Return ONLY a JSON array of objects in this exact format:
        [{
            "start": <exact_start_timestamp>,
-           "content": "complete segment content",
            "end": <exact_end_timestamp>
        }]
 
     Important VALIDATION:
     - Verify each end_time - start_time is EXACTLY 60 seconds
     - Ensure timestamps match actual transcript markers
-    - Confirm each content segment is continuous and complete
     - Verify segments don't overlap
 
     Return ONLY the JSON. No explanations or additional text.
@@ -117,7 +117,9 @@ def extract_highlights(
             # Extract JSON from response
             response_text = response.text
             json_string = response_text.strip("`json\n").strip()
+            # print(json_string)
             highlights = json.loads(json_string)
+            # print(type(highlights))
 
             # Validate the highlights
             if validate_highlights(highlights):
@@ -133,10 +135,49 @@ def extract_highlights(
 def GetHighlights(transcription: str) -> list[tuple[float, float]]:
     """Main function to get multiple 60-second highlights from transcription."""
     try:
+        # Clean and validate the input transcription
+        if not transcription or not transcription.strip():
+            print("Empty transcription")
+            return []
+
+        # Prepare initial state with cleaned transcription
+        initial_state = {
+            "messages": [{"role": "user", "content": transcription.strip()}],
+            "highlights": [],
+            "error": None,
+        }
+
+        # Extract timestamps and text
         highlights = extract_highlights(transcription)
-        return [(float(h["start"]), float(h["end"])) for h in highlights]
+
+        # Validate the highlights
+        if not highlights:
+            print("No highlights extracted")
+            return []
+
+        # Convert to list of tuples and validate each pair
+        result = []
+        for h in highlights:
+            try:
+                start = float(h["start"])
+                end = float(h["end"])
+                if start >= 0 and end > start:
+                    result.append((start, end))
+            except (ValueError, KeyError, TypeError) as e:
+                print(f"Error processing highlight: {str(e)}")
+                continue
+
+        if not result:
+            print("No valid highlights found")
+            return []
+
+        return result
+
     except Exception as e:
-        print(f"Error in GetHighlights: {e}")
+        print(f"Error in GetHighlights: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
         return []
 
 
