@@ -1,6 +1,7 @@
 # AI-Youtube-Shorts-Generator
 
 An AI-powered tool that automatically generates engaging short-form videos from longer YouTube content.
+Forked from [SamurAIGPT/AI-Youtube-Shorts-Generator](https://github.com/SamurAIGPT/AI-Youtube-Shorts-Generator)
 
 ## Features
 - **Video Download**: Given a YouTube URL, the tool downloads the video.
