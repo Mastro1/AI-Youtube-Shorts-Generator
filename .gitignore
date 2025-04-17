@@ -12,7 +12,8 @@
 /videos
 
 # Virtual environment
-venv/
+.venv/
+.vscode/
 env/
 
 # Environment variables

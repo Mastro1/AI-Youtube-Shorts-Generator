@@ -1,6 +1,7 @@
 import os
 from pytubefix import YouTube
 import ffmpeg
+import subprocess
 
 
 def get_video_size(stream):
@@ -24,6 +25,18 @@ def download_youtube_video(url):
 
         choice = int(input("Enter the number of the video stream to download: "))
         selected_stream = video_streams[choice]
+        
+        # DEBUG: Print selected stream info
+        print(f"DEBUG: Selected Stream Info:")
+        print(f"  Resolution: {getattr(selected_stream, 'resolution', 'N/A')}")
+        print(f"  FPS: {getattr(selected_stream, 'fps', 'N/A')}")
+        print(f"  Mime Type: {getattr(selected_stream, 'mime_type', 'N/A')}")
+        print(f"  Is Progressive: {getattr(selected_stream, 'is_progressive', 'N/A')}")
+        # Try accessing width/height directly if available
+        selected_width = getattr(selected_stream, 'width', None)
+        selected_height = getattr(selected_stream, 'height', None)
+        print(f"  Reported Width: {selected_width}")
+        print(f"  Reported Height: {selected_height}")
 
         if not os.path.exists("videos"):
             os.makedirs("videos")
@@ -40,18 +53,40 @@ def download_youtube_video(url):
             )
 
             print("Merging video and audio...")
-            output_file = os.path.join("videos", f"{yt.title}.mp4")
-            stream = ffmpeg.input(video_file)
-            audio = ffmpeg.input(audio_file)
-            stream = ffmpeg.output(
-                stream,
-                audio,
-                output_file,
-                vcodec="libx264",
-                acodec="aac",
-                strict="experimental",
+            merged_output_file = os.path.join("videos", f"{yt.title}_merged.mp4")
+            output_file = merged_output_file
+            
+            # Prepare ffmpeg inputs
+            in_video = ffmpeg.input(video_file)
+            in_audio = ffmpeg.input(audio_file)
+            
+            # Prepare ffmpeg output arguments
+            output_args = {
+                "vcodec": "libx264",
+                "acodec": "aac",
+                "strict": "experimental",
+                "crf": "23", # Reasonable quality
+                "preset": "medium" # Encoding speed
+            }
+            
+            # Add size option ONLY if width and height were found
+            if selected_width and selected_height:
+                print(f"  Setting merge output size to: {selected_width}x{selected_height}")
+                output_args['s'] = f'{selected_width}x{selected_height}'
+            else:
+                print("  Warning: Could not determine resolution from selected stream, merge might use default size.")
+
+            # Create the output stream specification
+            merged_stream = ffmpeg.output(
+                in_video,         # Map video from video file
+                in_audio,         # Map audio from audio file
+                merged_output_file,
+                **output_args     # Pass arguments dictionary
             )
-            ffmpeg.run(stream, overwrite_output=True)
+            
+            # Run the merge command
+            print(f"  Running merge command: {ffmpeg.compile(merged_stream)}")
+            ffmpeg.run(merged_stream, overwrite_output=True)
 
             os.remove(video_file)
             os.remove(audio_file)
@@ -72,8 +107,15 @@ def download_youtube_video(url):
         print(
             "Also, ensure that ffmpeg is installed on your system and available in your PATH."
         )
+        return None
 
 
 if __name__ == "__main__":
     youtube_url = input("Enter YouTube video URL: ")
-    download_youtube_video(youtube_url)
+    # Just call the download function for direct testing
+    downloaded_file = download_youtube_video(youtube_url)
+    
+    if downloaded_file:
+        print(f"\nDownload finished. File available at: {downloaded_file}")
+    else:
+        print("\nDownload failed.")
